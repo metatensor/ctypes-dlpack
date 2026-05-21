@@ -6,6 +6,7 @@ import pathlib
 import re
 import tempfile
 import urllib.request
+from typing import TextIO
 
 import pycparser
 from pycparser import c_ast, c_generator, parse_file
@@ -17,12 +18,13 @@ HEADER_TEMPLATE = (
     "https://raw.githubusercontent.com/dmlc/dlpack/{version}/include/dlpack/dlpack.h"
 )
 OUTPUT_PATH = ROOT / "src" / "ctypes_dlpack" / "_c_api.py"
+REFERENCE_PATH = ROOT / "docs" / "src" / "reference.rst"
 
 
 GENERATOR = c_generator.CGenerator()
 
 ENUM_HELPERS = """
-class EnumType(type(ctypes.c_int32)):
+class _EnumType(type(ctypes.c_int32)):
     def __new__(metacls, name, bases, namespace):
         if "_members_" not in namespace:
             members = {}
@@ -43,7 +45,7 @@ class EnumType(type(ctypes.c_int32)):
         return f"<Enum {self.__name__}>"
 
 
-class Enum(ctypes.c_int32, metaclass=EnumType):
+class _Enum(ctypes.c_int32, metaclass=_EnumType):
     _members_ = {}
 
     def __repr__(self):
@@ -113,6 +115,11 @@ class HeaderVisitor(c_ast.NodeVisitor):
 
 def _clean_int_literals(expression: str) -> str:
     expression = re.sub(r"([0-9A-Fa-fx]+)[uUlL]+", r"\1", expression)
+    while expression.startswith("(") and expression.endswith(")"):
+        inner = expression[1:-1]
+        if inner.count("(") != inner.count(")"):
+            break
+        expression = inner
     return expression
 
 
@@ -255,57 +262,147 @@ def parse_header(header_text: str) -> HeaderVisitor:
     return visitor
 
 
-def generate_python_module(defines: dict[str, str], parsed: HeaderVisitor) -> str:
-    lines: list[str] = []
-    lines.append("# ruff: noqa")
-    lines.append('"""Auto-generated ctypes declarations for DLPack."""')
-    lines.append("")
-    lines.append("import ctypes")
-    lines.append("")
+def _external_c_ref(project: str, role: str, symbol: str) -> str:
+    return f":external+{project}:c:{role}:`{symbol}`"
+
+
+def _function_signature(node: c_ast.Node) -> tuple[str, list[str]] | None:
+    if isinstance(node, c_ast.PtrDecl) and isinstance(node.type, c_ast.FuncDecl):
+        node = node.type
+
+    if not isinstance(node, c_ast.FuncDecl):
+        return None
+
+    restype = to_ctypes(node.type)
+    params: list[str] = []
+    if node.args is not None:
+        for parameter in node.args.params:
+            params.append(to_ctypes(parameter.type))
+
+    if params == ["None"]:
+        params = []
+
+    return restype, params
+
+
+def generate_python_module(
+    defines: dict[str, str], parsed: HeaderVisitor, file: TextIO
+) -> None:
+    file.write("# ruff: noqa\n")
+    file.write("import ctypes\n\n")
 
     for name in sorted(defines):
-        lines.append(f"{name} = {defines[name]}")
+        file.write(f"{name} = {defines[name]}\n")
 
-    lines.append("")
-    lines.extend(ENUM_HELPERS.splitlines())
+    file.write(ENUM_HELPERS)
 
     for enum in parsed.enums:
-        lines.append("")
-        lines.append(f"class {enum.name}(Enum):")
+        file.write("\n\n")
+        file.write(f"class {enum.name}(_Enum):\n")
+        file.write("    pass\n")
         for name, value in enum.values:
-            lines.append(f"    {name} = {value}")
+            file.write(f"    {name} = {value}\n")
 
     for struct in parsed.structs:
-        lines.append("")
-        lines.append(f"class {struct.name}(ctypes.Structure):")
-        lines.append("    pass")
+        file.write("\n\n")
+        file.write(f"class {struct.name}(ctypes.Structure):\n")
+        file.write("    pass\n")
 
     for typedef in parsed.typedefs:
-        lines.append("")
-        lines.append(f"{typedef.name} = {to_ctypes(typedef.typ)}")
+        file.write("\n\n")
+        signature = _function_signature(typedef.typ)
+        if signature is None:
+            file.write(f"{typedef.name} = {to_ctypes(typedef.typ)}\n")
+        else:
+            restype, params = signature
+            file.write(f"{typedef.name} = ctypes.CFUNCTYPE(\n")
+            file.write(f"    {restype},\n")
+            for param in params:
+                file.write(f"    {param},\n")
+            file.write(")\n")
 
     for struct in parsed.structs:
-        lines.append("")
-        lines.append(f"{struct.name}._fields_ = [")
+        file.write("\n")
+        file.write(f"{struct.name}._fields_ = [\n")
         for member_name, member_type in struct.members:
-            lines.append(f'    ("{member_name}", {to_ctypes(member_type)}),')
-        lines.append("]")
+            file.write(f'    ("{member_name}", {to_ctypes(member_type)}),\n')
+        file.write("]\n")
 
-    lines.append("")
-    return "\n".join(lines)
+
+def generate_reference_rst(
+    defines: dict[str, str], parsed: HeaderVisitor, file: TextIO
+) -> None:
+    file.write("Python API reference\n")
+    file.write("====================\n\n")
+
+    file.write("Macros\n")
+    file.write("------\n\n")
+    for name in sorted(defines):
+        ref = _external_c_ref("dlpack", "macro", name)
+        file.write(f".. py:data:: ctypes_dlpack.{name}\n")
+        file.write("   :type: int\n")
+        file.write(f"\n   See the documentation for {ref}.\n\n")
+
+    file.write("Callback types\n")
+    file.write("--------------\n\n")
+    for typedef in parsed.typedefs:
+        ref = _external_c_ref("dlpack", "type", typedef.name)
+        file.write(f".. py:data:: ctypes_dlpack.{typedef.name}\n")
+        file.write("   :type: ctypes.CFUNCTYPE\n")
+        file.write(f"\n   See the documentation for the C callback: {ref}.\n\n")
+
+    file.write("Enums\n")
+    file.write("-----\n\n")
+    for enum in parsed.enums:
+        ref = _external_c_ref("dlpack", "enum", enum.name)
+        file.write(
+            f".. py:class:: ctypes_dlpack.{enum.name}\n"
+            f"\n"
+            f"   See the documentation for the C enum: {ref}.\n\n"
+        )
+        for name, _ in enum.values:
+            member_ref = _external_c_ref("dlpack", "enumerator", f"{enum.name}.{name}")
+            file.write(f"   .. py:attribute:: {name}\n\n      see {member_ref}\n\n")
+
+    file.write("Structs\n")
+    file.write("-------\n\n")
+    for struct in parsed.structs:
+        ref = _external_c_ref("dlpack", "struct", struct.name)
+        file.write(
+            f".. py:class:: ctypes_dlpack.{struct.name}\n"
+            f"\n"
+            f"   See the documentation for the C struct: {ref}.\n\n"
+        )
+        for member_name, _ in struct.members:
+            member_ref = _external_c_ref(
+                "dlpack", "member", f"{struct.name}.{member_name}"
+            )
+            file.write(
+                f"   .. py:attribute:: {member_name}\n\n      see {member_ref}\n\n"
+            )
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--version", default=DEFAULT_VERSION, help="DLPack release tag")
     parser.add_argument("--output", default=str(OUTPUT_PATH), help="output python file")
+    parser.add_argument(
+        "--reference-output",
+        default=str(REFERENCE_PATH),
+        help="output rst API reference",
+    )
     args = parser.parse_args()
 
     header = download_header(args.version)
     defines = parse_defines(header)
     parsed = parse_header(normalize_header(header))
-    generated = generate_python_module(defines, parsed)
 
     output = pathlib.Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(generated, encoding="utf8")
+    with output.open("w", encoding="utf8") as file:
+        generate_python_module(defines, parsed, file)
+
+    reference_output = pathlib.Path(args.reference_output)
+    reference_output.parent.mkdir(parents=True, exist_ok=True)
+    with reference_output.open("w", encoding="utf8") as file:
+        generate_reference_rst(defines, parsed, file)

@@ -1,0 +1,361 @@
+Python API reference
+====================
+
+Macros
+------
+
+.. py:data:: ctypes_dlpack.DLPACK_FLAG_BITMASK_IS_COPIED
+   :type: int
+
+   See the documentation for :external+dlpack:c:macro:`DLPACK_FLAG_BITMASK_IS_COPIED`.
+
+.. py:data:: ctypes_dlpack.DLPACK_FLAG_BITMASK_IS_SUBBYTE_TYPE_PADDED
+   :type: int
+
+   See the documentation for :external+dlpack:c:macro:`DLPACK_FLAG_BITMASK_IS_SUBBYTE_TYPE_PADDED`.
+
+.. py:data:: ctypes_dlpack.DLPACK_FLAG_BITMASK_READ_ONLY
+   :type: int
+
+   See the documentation for :external+dlpack:c:macro:`DLPACK_FLAG_BITMASK_READ_ONLY`.
+
+.. py:data:: ctypes_dlpack.DLPACK_MAJOR_VERSION
+   :type: int
+
+   See the documentation for :external+dlpack:c:macro:`DLPACK_MAJOR_VERSION`.
+
+.. py:data:: ctypes_dlpack.DLPACK_MINOR_VERSION
+   :type: int
+
+   See the documentation for :external+dlpack:c:macro:`DLPACK_MINOR_VERSION`.
+
+Callback types
+--------------
+
+.. py:data:: ctypes_dlpack.DLPackManagedTensorAllocator
+   :type: ctypes.CFUNCTYPE
+
+   See the documentation for the C callback: :external+dlpack:c:type:`DLPackManagedTensorAllocator`.
+
+.. py:data:: ctypes_dlpack.DLPackManagedTensorFromPyObjectNoSync
+   :type: ctypes.CFUNCTYPE
+
+   See the documentation for the C callback: :external+dlpack:c:type:`DLPackManagedTensorFromPyObjectNoSync`.
+
+.. py:data:: ctypes_dlpack.DLPackDLTensorFromPyObjectNoSync
+   :type: ctypes.CFUNCTYPE
+
+   See the documentation for the C callback: :external+dlpack:c:type:`DLPackDLTensorFromPyObjectNoSync`.
+
+.. py:data:: ctypes_dlpack.DLPackCurrentWorkStream
+   :type: ctypes.CFUNCTYPE
+
+   See the documentation for the C callback: :external+dlpack:c:type:`DLPackCurrentWorkStream`.
+
+.. py:data:: ctypes_dlpack.DLPackManagedTensorToPyObjectNoSync
+   :type: ctypes.CFUNCTYPE
+
+   See the documentation for the C callback: :external+dlpack:c:type:`DLPackManagedTensorToPyObjectNoSync`.
+
+Enums
+-----
+
+.. py:class:: ctypes_dlpack.DLDeviceType
+
+   See the documentation for the C enum: :external+dlpack:c:enum:`DLDeviceType`.
+
+   .. py:attribute:: kDLCPU
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLCPU`
+
+   .. py:attribute:: kDLCUDA
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLCUDA`
+
+   .. py:attribute:: kDLCUDAHost
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLCUDAHost`
+
+   .. py:attribute:: kDLOpenCL
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLOpenCL`
+
+   .. py:attribute:: kDLVulkan
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLVulkan`
+
+   .. py:attribute:: kDLMetal
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLMetal`
+
+   .. py:attribute:: kDLVPI
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLVPI`
+
+   .. py:attribute:: kDLROCM
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLROCM`
+
+   .. py:attribute:: kDLROCMHost
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLROCMHost`
+
+   .. py:attribute:: kDLExtDev
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLExtDev`
+
+   .. py:attribute:: kDLCUDAManaged
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLCUDAManaged`
+
+   .. py:attribute:: kDLOneAPI
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLOneAPI`
+
+   .. py:attribute:: kDLWebGPU
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLWebGPU`
+
+   .. py:attribute:: kDLHexagon
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLHexagon`
+
+   .. py:attribute:: kDLMAIA
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLMAIA`
+
+   .. py:attribute:: kDLTrn
+
+      see :external+dlpack:c:enumerator:`DLDeviceType.kDLTrn`
+
+.. py:class:: ctypes_dlpack.DLDataTypeCode
+
+   See the documentation for the C enum: :external+dlpack:c:enum:`DLDataTypeCode`.
+
+   .. py:attribute:: kDLInt
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLInt`
+
+   .. py:attribute:: kDLUInt
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLUInt`
+
+   .. py:attribute:: kDLFloat
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat`
+
+   .. py:attribute:: kDLOpaqueHandle
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLOpaqueHandle`
+
+   .. py:attribute:: kDLBfloat
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLBfloat`
+
+   .. py:attribute:: kDLComplex
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLComplex`
+
+   .. py:attribute:: kDLBool
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLBool`
+
+   .. py:attribute:: kDLFloat8_e3m4
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e3m4`
+
+   .. py:attribute:: kDLFloat8_e4m3
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e4m3`
+
+   .. py:attribute:: kDLFloat8_e4m3b11fnuz
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e4m3b11fnuz`
+
+   .. py:attribute:: kDLFloat8_e4m3fn
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e4m3fn`
+
+   .. py:attribute:: kDLFloat8_e4m3fnuz
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e4m3fnuz`
+
+   .. py:attribute:: kDLFloat8_e5m2
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e5m2`
+
+   .. py:attribute:: kDLFloat8_e5m2fnuz
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e5m2fnuz`
+
+   .. py:attribute:: kDLFloat8_e8m0fnu
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat8_e8m0fnu`
+
+   .. py:attribute:: kDLFloat6_e2m3fn
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat6_e2m3fn`
+
+   .. py:attribute:: kDLFloat6_e3m2fn
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat6_e3m2fn`
+
+   .. py:attribute:: kDLFloat4_e2m1fn
+
+      see :external+dlpack:c:enumerator:`DLDataTypeCode.kDLFloat4_e2m1fn`
+
+Structs
+-------
+
+.. py:class:: ctypes_dlpack.DLPackVersion
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLPackVersion`.
+
+   .. py:attribute:: major
+
+      see :external+dlpack:c:member:`DLPackVersion.major`
+
+   .. py:attribute:: minor
+
+      see :external+dlpack:c:member:`DLPackVersion.minor`
+
+.. py:class:: ctypes_dlpack.DLDevice
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLDevice`.
+
+   .. py:attribute:: device_type
+
+      see :external+dlpack:c:member:`DLDevice.device_type`
+
+   .. py:attribute:: device_id
+
+      see :external+dlpack:c:member:`DLDevice.device_id`
+
+.. py:class:: ctypes_dlpack.DLDataType
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLDataType`.
+
+   .. py:attribute:: code
+
+      see :external+dlpack:c:member:`DLDataType.code`
+
+   .. py:attribute:: bits
+
+      see :external+dlpack:c:member:`DLDataType.bits`
+
+   .. py:attribute:: lanes
+
+      see :external+dlpack:c:member:`DLDataType.lanes`
+
+.. py:class:: ctypes_dlpack.DLTensor
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLTensor`.
+
+   .. py:attribute:: data
+
+      see :external+dlpack:c:member:`DLTensor.data`
+
+   .. py:attribute:: device
+
+      see :external+dlpack:c:member:`DLTensor.device`
+
+   .. py:attribute:: ndim
+
+      see :external+dlpack:c:member:`DLTensor.ndim`
+
+   .. py:attribute:: dtype
+
+      see :external+dlpack:c:member:`DLTensor.dtype`
+
+   .. py:attribute:: shape
+
+      see :external+dlpack:c:member:`DLTensor.shape`
+
+   .. py:attribute:: strides
+
+      see :external+dlpack:c:member:`DLTensor.strides`
+
+   .. py:attribute:: byte_offset
+
+      see :external+dlpack:c:member:`DLTensor.byte_offset`
+
+.. py:class:: ctypes_dlpack.DLManagedTensor
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLManagedTensor`.
+
+   .. py:attribute:: dl_tensor
+
+      see :external+dlpack:c:member:`DLManagedTensor.dl_tensor`
+
+   .. py:attribute:: manager_ctx
+
+      see :external+dlpack:c:member:`DLManagedTensor.manager_ctx`
+
+   .. py:attribute:: deleter
+
+      see :external+dlpack:c:member:`DLManagedTensor.deleter`
+
+.. py:class:: ctypes_dlpack.DLManagedTensorVersioned
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLManagedTensorVersioned`.
+
+   .. py:attribute:: version
+
+      see :external+dlpack:c:member:`DLManagedTensorVersioned.version`
+
+   .. py:attribute:: manager_ctx
+
+      see :external+dlpack:c:member:`DLManagedTensorVersioned.manager_ctx`
+
+   .. py:attribute:: deleter
+
+      see :external+dlpack:c:member:`DLManagedTensorVersioned.deleter`
+
+   .. py:attribute:: flags
+
+      see :external+dlpack:c:member:`DLManagedTensorVersioned.flags`
+
+   .. py:attribute:: dl_tensor
+
+      see :external+dlpack:c:member:`DLManagedTensorVersioned.dl_tensor`
+
+.. py:class:: ctypes_dlpack.DLPackExchangeAPIHeader
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLPackExchangeAPIHeader`.
+
+   .. py:attribute:: version
+
+      see :external+dlpack:c:member:`DLPackExchangeAPIHeader.version`
+
+   .. py:attribute:: prev_api
+
+      see :external+dlpack:c:member:`DLPackExchangeAPIHeader.prev_api`
+
+.. py:class:: ctypes_dlpack.DLPackExchangeAPI
+
+   See the documentation for the C struct: :external+dlpack:c:struct:`DLPackExchangeAPI`.
+
+   .. py:attribute:: header
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.header`
+
+   .. py:attribute:: managed_tensor_allocator
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.managed_tensor_allocator`
+
+   .. py:attribute:: managed_tensor_from_py_object_no_sync
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.managed_tensor_from_py_object_no_sync`
+
+   .. py:attribute:: managed_tensor_to_py_object_no_sync
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.managed_tensor_to_py_object_no_sync`
+
+   .. py:attribute:: dltensor_from_py_object_no_sync
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.dltensor_from_py_object_no_sync`
+
+   .. py:attribute:: current_work_stream
+
+      see :external+dlpack:c:member:`DLPackExchangeAPI.current_work_stream`
+

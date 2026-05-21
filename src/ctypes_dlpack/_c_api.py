@@ -1,6 +1,4 @@
 # ruff: noqa
-"""Auto-generated ctypes declarations for DLPack."""
-
 import ctypes
 
 DLPACK_FLAG_BITMASK_IS_COPIED = 1 << 1
@@ -10,7 +8,7 @@ DLPACK_MAJOR_VERSION = 1
 DLPACK_MINOR_VERSION = 3
 
 
-class EnumType(type(ctypes.c_int32)):
+class _EnumType(type(ctypes.c_int32)):
     def __new__(metacls, name, bases, namespace):
         if "_members_" not in namespace:
             members = {}
@@ -31,7 +29,7 @@ class EnumType(type(ctypes.c_int32)):
         return f"<Enum {self.__name__}>"
 
 
-class Enum(ctypes.c_int32, metaclass=EnumType):
+class _Enum(ctypes.c_int32, metaclass=_EnumType):
     _members_ = {}
 
     def __repr__(self):
@@ -45,7 +43,8 @@ class Enum(ctypes.c_int32, metaclass=EnumType):
         return type(self) is type(other) and self.value == other.value
 
 
-class DLDeviceType(Enum):
+class DLDeviceType(_Enum):
+    pass
     kDLCPU = 1
     kDLCUDA = 2
     kDLCUDAHost = 3
@@ -64,7 +63,8 @@ class DLDeviceType(Enum):
     kDLTrn = 18
 
 
-class DLDataTypeCode(Enum):
+class DLDataTypeCode(_Enum):
+    pass
     kDLInt = 0
     kDLUInt = 1
     kDLFloat = 2
@@ -125,19 +125,28 @@ DLPackManagedTensorAllocator = ctypes.CFUNCTYPE(
     ctypes.CFUNCTYPE(None, ctypes.c_void_p, ctypes.c_char_p, ctypes.c_char_p),
 )
 
+
 DLPackManagedTensorFromPyObjectNoSync = ctypes.CFUNCTYPE(
     ctypes.c_int,
     ctypes.c_void_p,
     ctypes.POINTER(ctypes.POINTER(DLManagedTensorVersioned)),
 )
 
+
 DLPackDLTensorFromPyObjectNoSync = ctypes.CFUNCTYPE(
-    ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(DLTensor)
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.POINTER(DLTensor),
 )
 
+
 DLPackCurrentWorkStream = ctypes.CFUNCTYPE(
-    ctypes.c_int, DLDeviceType, ctypes.c_int32, ctypes.POINTER(ctypes.c_void_p)
+    ctypes.c_int,
+    DLDeviceType,
+    ctypes.c_int32,
+    ctypes.POINTER(ctypes.c_void_p),
 )
+
 
 DLPackManagedTensorToPyObjectNoSync = ctypes.CFUNCTYPE(
     ctypes.c_int,
