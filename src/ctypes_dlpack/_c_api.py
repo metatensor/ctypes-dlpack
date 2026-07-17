@@ -6,8 +6,6 @@ DLPACK_FLAG_BITMASK_IS_SUBBYTE_TYPE_PADDED = 1 << 2
 DLPACK_FLAG_BITMASK_READ_ONLY = 1 << 0
 DLPACK_MAJOR_VERSION = 1
 DLPACK_MINOR_VERSION = 3
-
-
 class _EnumType(type(ctypes.c_int32)):
     def __new__(metacls, name, bases, namespace):
         if "_members_" not in namespace:
@@ -41,7 +39,6 @@ class _Enum(ctypes.c_int32, metaclass=_EnumType):
             return self.value == other
 
         return type(self) is type(other) and self.value == other.value
-
 
 class DLDeviceType(_Enum):
     pass

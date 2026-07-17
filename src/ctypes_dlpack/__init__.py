@@ -1,4 +1,5 @@
 from . import _c_api
+from ._dlpack import DLPackArray, array_as_dlpack
 
 
 __version__ = "0.1.0"
@@ -14,6 +15,13 @@ for name, value in _public_members.items():
 
     if getattr(value, "__module__", None) == _c_api.__name__:
         value.__module__ = __name__
+
+
+__all__ = [
+    *_public_members.keys(),
+    "DLPackArray",
+    "array_as_dlpack",
+]
 
 
 del _public_members
