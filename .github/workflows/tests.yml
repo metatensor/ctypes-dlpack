@@ -16,7 +16,8 @@ jobs:
           - os: ubuntu-24.04
             python-version: "3.10"
             torch-pin: "==2.3.*"
-            numpy-pin: "==2.0"
+            numpy-pin: "==2.0.*"
+            jax-pin: "==0.5.*"
           - os: ubuntu-24.04
             python-version: "3.14"
           - os: macos-15
@@ -40,3 +41,4 @@ jobs:
         env:
           CTYPES_DLPACK_TORCH_PIN: ${{ matrix.torch-pin }}
           CTYPES_DLPACK_NUMPY_PIN: ${{ matrix.numpy-pin }}
+          CTYPES_DLPACK_JAX_PIN: ${{ matrix.jax-pin }}

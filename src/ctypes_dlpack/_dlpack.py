@@ -2,6 +2,7 @@ import ctypes
 
 from ._c_api import (
     DLDevice,
+    DLDeviceType,
     DLManagedTensor,
     DLManagedTensorVersioned,
     DLPackVersion,
@@ -357,10 +358,27 @@ class DLPackArray:
         if pointer is None:
             raise RuntimeError("can not call __dlpack__ twice on DLPackArray")
 
-        if stream is not None:
-            raise RuntimeError("only `stream=None` is currently supported")
+        device = self.__dlpack_device__()
+        is_cuda = device[0] in (
+            DLDeviceType.kDLCUDA,
+            DLDeviceType.kDLCUDAHost,
+            DLDeviceType.kDLCUDAManaged,
+        )
 
-        if dl_device is not None and dl_device != self.__dlpack_device__():
+        if stream is not None:
+            if is_cuda and stream == 1:
+                # ``stream=1`` is the DLPack sentinel for the CUDA default
+                # stream. The data we re-export is already ready (it was
+                # produced and synchronized by the original exporter), so we
+                # can safely accept the default stream without doing anything.
+                pass
+            else:
+                raise RuntimeError(
+                    "only `stream=None` and `stream=1` (CUDA default stream) "
+                    "are currently supported"
+                )
+
+        if dl_device is not None and dl_device != device:
             raise BufferError("device conversion is not supported")
 
         if copy is None:
