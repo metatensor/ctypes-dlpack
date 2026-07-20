@@ -160,25 +160,31 @@ def _wrap_unversioned_as_versioned(unversioned_ptr):
     if not versioned_mem:
         raise MemoryError("failed to allocate DLManagedTensorVersioned")
 
-    versioned_ptr = ctypes.cast(versioned_mem, ctypes.POINTER(DLManagedTensorVersioned))
-    versioned = versioned_ptr.contents
+    try:
+        versioned_ptr = ctypes.cast(
+            versioned_mem, ctypes.POINTER(DLManagedTensorVersioned)
+        )
+        versioned = versioned_ptr.contents
 
-    versioned.version = DLPackVersion()
-    versioned.version.major = 1
-    versioned.version.minor = 0
-    versioned.manager_ctx = ctypes.cast(unversioned_ptr, ctypes.c_void_p)
-    versioned.deleter = _versioned_wrapper_deleter
-    versioned.flags = 0
+        versioned.version = DLPackVersion()
+        versioned.version.major = 1
+        versioned.version.minor = 0
+        versioned.manager_ctx = ctypes.cast(unversioned_ptr, ctypes.c_void_p)
+        versioned.deleter = _versioned_wrapper_deleter
+        versioned.flags = 0
 
-    # DLManagedTensor starts with a DLTensor, so copying from the struct base
-    # address into versioned.dl_tensor preserves the payload layout.
-    ctypes.memmove(
-        ctypes.addressof(versioned.dl_tensor),
-        unversioned_ptr,
-        ctypes.sizeof(DLTensor),
-    )
+        # DLManagedTensor starts with a DLTensor, so copying from the struct base
+        # address into versioned.dl_tensor preserves the payload layout.
+        ctypes.memmove(
+            ctypes.addressof(versioned.dl_tensor),
+            unversioned_ptr,
+            ctypes.sizeof(DLTensor),
+        )
 
-    return versioned_ptr
+        return versioned_ptr
+    except BaseException:
+        PYTHON_API.PyMem_RawFree(versioned_mem)
+        raise
 
 
 def _wrap_versioned_as_unversioned(versioned_ptr):
@@ -193,21 +199,25 @@ def _wrap_versioned_as_unversioned(versioned_ptr):
     if not unversioned_mem:
         raise MemoryError("failed to allocate DLManagedTensor")
 
-    unversioned_ptr = ctypes.cast(unversioned_mem, ctypes.POINTER(DLManagedTensor))
-    unversioned = unversioned_ptr.contents
+    try:
+        unversioned_ptr = ctypes.cast(unversioned_mem, ctypes.POINTER(DLManagedTensor))
+        unversioned = unversioned_ptr.contents
 
-    unversioned.manager_ctx = ctypes.cast(versioned_ptr, ctypes.c_void_p)
-    unversioned.deleter = _unversioned_wrapper_deleter
+        unversioned.manager_ctx = ctypes.cast(versioned_ptr, ctypes.c_void_p)
+        unversioned.deleter = _unversioned_wrapper_deleter
 
-    # Both structs embed a ``DLTensor`` with identical layout; copy the payload
-    # from the versioned struct into the legacy one.
-    ctypes.memmove(
-        ctypes.addressof(unversioned.dl_tensor),
-        ctypes.addressof(versioned_ptr.contents.dl_tensor),
-        ctypes.sizeof(DLTensor),
-    )
+        # Both structs embed a ``DLTensor`` with identical layout; copy the
+        # payload from the versioned struct into the legacy one.
+        ctypes.memmove(
+            ctypes.addressof(unversioned.dl_tensor),
+            ctypes.addressof(versioned_ptr.contents.dl_tensor),
+            ctypes.sizeof(DLTensor),
+        )
 
-    return unversioned_ptr
+        return unversioned_ptr
+    except BaseException:
+        PYTHON_API.PyMem_RawFree(unversioned_mem)
+        raise
 
 
 def _make_dlpack_versioned_capsule(dl_managed_versioned_ptr):
@@ -229,26 +239,34 @@ def _make_dlpack_capsule(dl_managed_ptr):
 
 
 def _call_dlpack_with_fallbacks(array, stream, max_version, dl_device, copy):
-    """Try multiple __dlpack__ signatures for broad compatibility."""
-    variants = (
-        {
-            "stream": stream,
-            "max_version": max_version,
-            "dl_device": dl_device,
-            "copy": copy,
-        },
-        {"stream": stream},
-        None,
-    )
+    """Try multiple __dlpack__ signatures for broad compatibility.
 
+    This tries both the ``2023.12`` array API signature (with ``max_version``,
+    ``dl_device``, and ``copy`` kwargs), as well as the legacy signature (with only
+    ``stream``). The first signature that does not raise a ``TypeError`` (due to unknown
+    keyword arguments) is used, and the resulting capsule is returned.
+    """
     last_error = None
-    for kwargs in variants:
-        try:
-            if kwargs is None:
-                return array.__dlpack__()
-            return array.__dlpack__(**kwargs)
-        except Exception as error:  # noqa: BLE001
-            last_error = error
+
+    try:
+        return array.__dlpack__(
+            stream=stream,
+            max_version=max_version,
+            dl_device=dl_device,
+            copy=copy,
+        )
+    except TypeError as error:
+        last_error = error
+
+    try:
+        return array.__dlpack__(stream=stream)
+    except TypeError as error:
+        last_error = error
+
+    try:
+        return array.__dlpack__()
+    except TypeError as error:
+        last_error = error
 
     raise RuntimeError("__dlpack__ call failed") from last_error
 
@@ -281,7 +299,25 @@ class DLPackArray:
         :param pointer: pointer to a ``DLManagedTensorVersioned`` to be re-exposed as
             Python object following the ``__dlpack__`` protocol.
         """
+        if not isinstance(pointer, ctypes.POINTER(DLManagedTensorVersioned)):
+            raise TypeError(
+                "`pointer` must be a ctypes.POINTER(DLManagedTensorVersioned), "
+                f"got {type(pointer).__name__}"
+            )
+
+        if not pointer:
+            raise ValueError("`pointer` is null")
+
         self._pointer = pointer
+
+    def __del__(self):
+        pointer = getattr(self, "_pointer", None)
+        if pointer is None:
+            return
+
+        self._pointer = None
+        if pointer.contents.deleter:
+            pointer.contents.deleter(pointer)
 
     def __dlpack__(
         self,
@@ -298,30 +334,38 @@ class DLPackArray:
             raise RuntimeError("only `stream=None` is currently supported")
 
         if dl_device is not None and dl_device != self.__dlpack_device__():
-            raise RuntimeError("device conversion is not supported")
+            raise BufferError("device conversion is not supported")
 
         if copy is None:
             copy = False
 
         if copy:
-            raise RuntimeError("only `copy=False` is supported")
+            raise BufferError("only `copy=False` is supported")
 
-        self._pointer = None
         if max_version is None or max_version[0] == 0:
             # The caller only supports the unversioned DLPack protocol (or did
             # not request a specific version): wrap our versioned tensor into a
             # legacy ``DLManagedTensor`` capsule.
             unversioned_ptr = _wrap_versioned_as_unversioned(pointer)
-            return _make_dlpack_capsule(unversioned_ptr)
+            result = _make_dlpack_capsule(unversioned_ptr)
         else:
-            return _make_dlpack_versioned_capsule(pointer)
+            result = _make_dlpack_versioned_capsule(pointer)
+
+        self._pointer = None
+        return result
 
     def __dlpack_device__(self):
         if self._pointer is None:
             raise RuntimeError("can not query __dlpack_device__ after __dlpack__")
 
         device = self._pointer[0].dl_tensor.device
-        return (device.device_type, device.device_id)
+        return (device.device_type.value, device.device_id)
+
+    def __repr__(self):
+        if self._pointer is None:
+            return "<DLPackArray (consumed)>"
+
+        return "<DLPackArray>"
 
 
 def array_as_dlpack(
@@ -339,12 +383,12 @@ def array_as_dlpack(
     for the protocol specification.
 
     This function will try to work with older version of the ``__dlpack__`` protocol,
-    wrapping the unversionned ``DLManagedTensor`` returned into a
+    wrapping the unversioned ``DLManagedTensor`` returned into a
     ``DLManagedTensorVersioned``. Some arguments might be ignored in this case, since
     they do not have an equivalent.
 
     :param array: any array type that implements the ``__dlpack__`` protocol
-    :param stream: the CUDA or ROCm syncronization stream, passed as-is to the
+    :param stream: the CUDA or ROCm synchronization stream, passed as-is to the
         ``__dlpack__`` method of ``array``.
     :param max_version: the maximum DLPack version that the caller of this function
         supports. If this is a ``DLPackVersion``, it is converted to the 2-tuple
@@ -359,17 +403,35 @@ def array_as_dlpack(
         max_version_tuple = None
     elif isinstance(max_version, DLPackVersion):
         max_version_tuple = (max_version.major, max_version.minor)
-    else:
-        assert isinstance(max_version, tuple) and len(max_version) == 2
+    elif (
+        isinstance(max_version, tuple)
+        and len(max_version) == 2
+        and isinstance(max_version[0], int)
+        and isinstance(max_version[1], int)
+    ):
         max_version_tuple = max_version
+    else:
+        raise TypeError(
+            "`max_version` must be a DLPackVersion, a 2-tuple of ints, or None; "
+            f"got {type(max_version).__name__}"
+        )
 
     if dl_device is None:
         dl_device_tuple = None
     elif isinstance(dl_device, DLDevice):
-        dl_device_tuple = (dl_device.device_type, dl_device.device_id)
-    else:
-        assert isinstance(dl_device, tuple) and len(dl_device) == 2
+        dl_device_tuple = (int(dl_device.device_type.value), dl_device.device_id)
+    elif (
+        isinstance(dl_device, tuple)
+        and len(dl_device) == 2
+        and isinstance(dl_device[0], int)
+        and isinstance(dl_device[1], int)
+    ):
         dl_device_tuple = dl_device
+    else:
+        raise TypeError(
+            "`dl_device` must be a DLDevice, a 2-tuple of ints, or None; "
+            f"got {type(dl_device).__name__}"
+        )
 
     capsule = _call_dlpack_with_fallbacks(
         array,
@@ -385,31 +447,38 @@ def array_as_dlpack(
         if not pointer:
             raise RuntimeError("failed to get pointer from versioned capsule")
 
+        result = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensorVersioned))
+
         status = PYTHON_API.PyCapsule_SetName(capsule, USED_DLPACK_VERSIONED_NAME)
         if status != 0:
             raise RuntimeError("failed to mark versioned capsule as used")
-
-        result = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensorVersioned))
     elif capsule_name == DLPACK_NAME:
         pointer = PYTHON_API.PyCapsule_GetPointer(capsule, DLPACK_NAME)
         if not pointer:
             raise RuntimeError("failed to get pointer from legacy capsule")
 
+        unversioned_ptr = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensor))
+        result = _wrap_unversioned_as_versioned(unversioned_ptr)
+
+        # Only disown the capsule once ``result`` is fully built; if SetName ran
+        # earlier and any subsequent step raised, the capsule destructor would
+        # see the ``used_`` name and skip the deleter, leaking the source tensor.
         status = PYTHON_API.PyCapsule_SetName(capsule, USED_DLPACK_NAME)
         if status != 0:
             raise RuntimeError("failed to mark legacy capsule as used")
-
-        unversioned_ptr = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensor))
-        result = _wrap_unversioned_as_versioned(unversioned_ptr)
     else:
         name = capsule_name.decode() if capsule_name else "NULL"
         raise RuntimeError(
-            f"unexpected capsule name: {name}; expected dltensor or dltensor_versioned"
+            f"unexpected capsule name: {name}; expected 'dltensor' "
+            "or 'dltensor_versioned'"
         )
 
     actual_device = result.contents.dl_tensor.device
     actual_device = (actual_device.device_type.value, actual_device.device_id)
-    if actual_device != dl_device_tuple:
+    if dl_device_tuple is not None and actual_device != dl_device_tuple:
+        if result.contents.deleter:
+            result.contents.deleter(result)
+
         raise ValueError(
             "DLPack device mismatch: "
             f"expected type={dl_device_tuple[0]} id={dl_device_tuple[1]}, "
