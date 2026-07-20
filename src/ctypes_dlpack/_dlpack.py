@@ -30,6 +30,29 @@ PYTHON_API.PyMem_RawFree.argtypes = [ctypes.c_void_p]
 PYTHON_API.PyCapsule_New.restype = ctypes.py_object
 PYTHON_API.PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
 
+PYTHON_API.PyErr_Fetch.restype = None
+PYTHON_API.PyErr_Fetch.argtypes = [
+    ctypes.POINTER(ctypes.py_object),
+    ctypes.POINTER(ctypes.py_object),
+    ctypes.POINTER(ctypes.py_object),
+]
+
+PYTHON_API.PyErr_Clear.restype = None
+PYTHON_API.PyErr_Clear.argtypes = []
+
+
+def _fetch_pyerr():
+    """Detach and return the current C-API exception instance, or ``None``.
+
+    ``PyErr_Fetch`` clears the thread-local exception state, so the caller is free to
+    raise a fresh exception without CPython discarding the original one.
+    """
+    etype = ctypes.py_object()
+    evalue = ctypes.py_object()
+    etb = ctypes.py_object()
+    PYTHON_API.PyErr_Fetch(ctypes.byref(etype), ctypes.byref(evalue), ctypes.byref(etb))
+    return evalue.value or None
+
 
 # ``PyCapsule_GetName``/``PyCapsule_GetPointer`` re-bound with a raw ``c_void_p``
 # argument. These are needed from inside ``_versioned_capsule_destructor``:
@@ -70,11 +93,13 @@ def _versioned_capsule_destructor(capsule_ptr):
 
     name = _PyCapsule_GetName_c_void_p(capsule_ptr)
     if name != DLPACK_VERSIONED_NAME:
-        # Already consumed by an importer; the importer owns the deleter call.
+        # Clear any C-API exception (e.g. set by ``GetName`` on failure)
+        PYTHON_API.PyErr_Clear()
         return
 
     ptr = _PyCapsule_GetPointer_c_void_p(capsule_ptr, DLPACK_VERSIONED_NAME)
     if not ptr:
+        PYTHON_API.PyErr_Clear()
         return
 
     versioned_ptr = ctypes.cast(ptr, ctypes.POINTER(DLManagedTensorVersioned))
@@ -101,11 +126,13 @@ def _unversioned_capsule_destructor(capsule_ptr):
 
     name = _PyCapsule_GetName_c_void_p(capsule_ptr)
     if name != DLPACK_NAME:
-        # Already consumed by an importer; the importer owns the deleter call.
+        # Clear any C-API exception (see ``_versioned_capsule_destructor``).
+        PYTHON_API.PyErr_Clear()
         return
 
     ptr = _PyCapsule_GetPointer_c_void_p(capsule_ptr, DLPACK_NAME)
     if not ptr:
+        PYTHON_API.PyErr_Clear()
         return
 
     unversioned_ptr = ctypes.cast(ptr, ctypes.POINTER(DLManagedTensor))
@@ -445,17 +472,21 @@ def array_as_dlpack(
     if capsule_name == DLPACK_VERSIONED_NAME:
         pointer = PYTHON_API.PyCapsule_GetPointer(capsule, DLPACK_VERSIONED_NAME)
         if not pointer:
-            raise RuntimeError("failed to get pointer from versioned capsule")
+            err = _fetch_pyerr()
+            raise RuntimeError("failed to get pointer from versioned capsule") from err
 
         result = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensorVersioned))
 
         status = PYTHON_API.PyCapsule_SetName(capsule, USED_DLPACK_VERSIONED_NAME)
         if status != 0:
-            raise RuntimeError("failed to mark versioned capsule as used")
+            err = _fetch_pyerr()
+            raise RuntimeError("failed to mark versioned capsule as used") from err
+
     elif capsule_name == DLPACK_NAME:
         pointer = PYTHON_API.PyCapsule_GetPointer(capsule, DLPACK_NAME)
         if not pointer:
-            raise RuntimeError("failed to get pointer from legacy capsule")
+            err = _fetch_pyerr()
+            raise RuntimeError("failed to get pointer from legacy capsule") from err
 
         unversioned_ptr = ctypes.cast(pointer, ctypes.POINTER(DLManagedTensor))
         result = _wrap_unversioned_as_versioned(unversioned_ptr)
@@ -465,8 +496,13 @@ def array_as_dlpack(
         # see the ``used_`` name and skip the deleter, leaking the source tensor.
         status = PYTHON_API.PyCapsule_SetName(capsule, USED_DLPACK_NAME)
         if status != 0:
-            raise RuntimeError("failed to mark legacy capsule as used")
+            err = _fetch_pyerr()
+            raise RuntimeError("failed to mark legacy capsule as used") from err
     else:
+        # Unexpected capsule name. If ``GetName`` itself failed (returned NULL)
+        # it set a C-API exception which we clear here; otherwise there is
+        # nothing to clear.
+        PYTHON_API.PyErr_Clear()
         name = capsule_name.decode() if capsule_name else "NULL"
         raise RuntimeError(
             f"unexpected capsule name: {name}; expected 'dltensor' "
