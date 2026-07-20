@@ -28,11 +28,7 @@ PYTHON_API.PyMem_RawFree.restype = None
 PYTHON_API.PyMem_RawFree.argtypes = [ctypes.c_void_p]
 
 PYTHON_API.PyCapsule_New.restype = ctypes.py_object
-PYTHON_API.PyCapsule_New.argtypes = [
-    ctypes.c_void_p,
-    ctypes.c_char_p,
-    ctypes.c_void_p,
-]
+PYTHON_API.PyCapsule_New.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_void_p]
 
 
 # ``PyCapsule_GetName``/``PyCapsule_GetPointer`` re-bound with a raw ``c_void_p``
@@ -94,6 +90,37 @@ _VERSIONED_CAPSULE_DESTRUCTOR_C = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
 )
 
 
+def _unversioned_capsule_destructor(capsule_ptr):
+    """Release the ``DLManagedTensor`` held by a legacy capsule.
+
+    See ``_versioned_capsule_destructor`` for why the argument is a raw
+    ``void*`` instead of ``py_object``.
+    """
+    if not capsule_ptr:
+        return
+
+    name = _PyCapsule_GetName_c_void_p(capsule_ptr)
+    if name != DLPACK_NAME:
+        # Already consumed by an importer; the importer owns the deleter call.
+        return
+
+    ptr = _PyCapsule_GetPointer_c_void_p(capsule_ptr, DLPACK_NAME)
+    if not ptr:
+        return
+
+    unversioned_ptr = ctypes.cast(ptr, ctypes.POINTER(DLManagedTensor))
+    unversioned = unversioned_ptr.contents
+    if unversioned.deleter:
+        unversioned.deleter(unversioned_ptr)
+
+
+# Keep a reference so the CFUNCTYPE is not garbage-collected while CPython holds
+# the destructor pointer inside the capsule.
+_UNVERSIONED_CAPSULE_DESTRUCTOR_C = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
+    _unversioned_capsule_destructor
+)
+
+
 @ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensorVersioned))
 def _versioned_wrapper_deleter(versioned_ptr):
     """Forward to the legacy deleter, then free the wrapper allocation."""
@@ -107,6 +134,23 @@ def _versioned_wrapper_deleter(versioned_ptr):
         original_ptr.contents.deleter(original_ptr)
 
     PYTHON_API.PyMem_RawFree(ctypes.cast(versioned_ptr, ctypes.c_void_p))
+
+
+@ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensor))
+def _unversioned_wrapper_deleter(unversioned_ptr):
+    """Forward to the versioned deleter, then free the wrapper allocation."""
+    if not unversioned_ptr:
+        return
+
+    unversioned = unversioned_ptr.contents
+    original_ptr = ctypes.cast(
+        unversioned.manager_ctx, ctypes.POINTER(DLManagedTensorVersioned)
+    )
+
+    if original_ptr and original_ptr.contents.deleter:
+        original_ptr.contents.deleter(original_ptr)
+
+    PYTHON_API.PyMem_RawFree(ctypes.cast(unversioned_ptr, ctypes.c_void_p))
 
 
 def _wrap_unversioned_as_versioned(unversioned_ptr):
@@ -137,6 +181,35 @@ def _wrap_unversioned_as_versioned(unversioned_ptr):
     return versioned_ptr
 
 
+def _wrap_versioned_as_unversioned(versioned_ptr):
+    """Wrap a ``DLManagedTensorVersioned`` pointer in a legacy allocation.
+
+    This is used to expose a versioned tensor to importers that only support the
+    unversioned DLPack protocol (``max_version`` is ``None`` or has a major
+    version of ``0``).
+    """
+    unversioned_size = ctypes.sizeof(DLManagedTensor)
+    unversioned_mem = PYTHON_API.PyMem_RawMalloc(unversioned_size)
+    if not unversioned_mem:
+        raise MemoryError("failed to allocate DLManagedTensor")
+
+    unversioned_ptr = ctypes.cast(unversioned_mem, ctypes.POINTER(DLManagedTensor))
+    unversioned = unversioned_ptr.contents
+
+    unversioned.manager_ctx = ctypes.cast(versioned_ptr, ctypes.c_void_p)
+    unversioned.deleter = _unversioned_wrapper_deleter
+
+    # Both structs embed a ``DLTensor`` with identical layout; copy the payload
+    # from the versioned struct into the legacy one.
+    ctypes.memmove(
+        ctypes.addressof(unversioned.dl_tensor),
+        ctypes.addressof(versioned_ptr.contents.dl_tensor),
+        ctypes.sizeof(DLTensor),
+    )
+
+    return unversioned_ptr
+
+
 def _make_dlpack_versioned_capsule(dl_managed_versioned_ptr):
     ptr_value = ctypes.cast(dl_managed_versioned_ptr, ctypes.c_void_p).value
     if not ptr_value:
@@ -144,6 +217,15 @@ def _make_dlpack_versioned_capsule(dl_managed_versioned_ptr):
 
     destructor = ctypes.cast(_VERSIONED_CAPSULE_DESTRUCTOR_C, ctypes.c_void_p)
     return PYTHON_API.PyCapsule_New(ptr_value, DLPACK_VERSIONED_NAME, destructor)
+
+
+def _make_dlpack_capsule(dl_managed_ptr):
+    ptr_value = ctypes.cast(dl_managed_ptr, ctypes.c_void_p).value
+    if not ptr_value:
+        raise ValueError("DLManagedTensor pointer is null")
+
+    destructor = ctypes.cast(_UNVERSIONED_CAPSULE_DESTRUCTOR_C, ctypes.c_void_p)
+    return PYTHON_API.PyCapsule_New(ptr_value, DLPACK_NAME, destructor)
 
 
 def _call_dlpack_with_fallbacks(array, stream, max_version, dl_device, copy):
@@ -215,14 +297,6 @@ class DLPackArray:
         if stream is not None:
             raise RuntimeError("only `stream=None` is currently supported")
 
-        version = pointer[0].version
-        version = (version.major, version.minor)
-        if max_version is not None and version[0] > max_version[0]:
-            raise RuntimeError(
-                f"requested DLPack version {max_version}, "
-                f"but tensor has version {version}"
-            )
-
         if dl_device is not None and dl_device != self.__dlpack_device__():
             raise RuntimeError("device conversion is not supported")
 
@@ -233,7 +307,14 @@ class DLPackArray:
             raise RuntimeError("only `copy=False` is supported")
 
         self._pointer = None
-        return _make_dlpack_versioned_capsule(pointer)
+        if max_version is None or max_version[0] == 0:
+            # The caller only supports the unversioned DLPack protocol (or did
+            # not request a specific version): wrap our versioned tensor into a
+            # legacy ``DLManagedTensor`` capsule.
+            unversioned_ptr = _wrap_versioned_as_unversioned(pointer)
+            return _make_dlpack_capsule(unversioned_ptr)
+        else:
+            return _make_dlpack_versioned_capsule(pointer)
 
     def __dlpack_device__(self):
         if self._pointer is None:
