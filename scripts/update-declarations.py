@@ -57,7 +57,7 @@ class _Enum(ctypes.c_int32, metaclass=_EnumType):
             return self.value == other
 
         return type(self) is type(other) and self.value == other.value
-""".strip()
+"""
 
 
 class EnumDef:
@@ -293,6 +293,8 @@ def generate_python_module(
 
     for name in sorted(defines):
         file.write(f"{name} = {defines[name]}\n")
+
+    file.write("\n")
 
     file.write(ENUM_HELPERS)
 
