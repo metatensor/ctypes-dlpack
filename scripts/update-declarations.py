@@ -36,10 +36,7 @@ class _EnumType(type(ctypes.c_int32)):
             members = namespace["_members_"]
 
         namespace["_reverse_map_"] = {v: k for k, v in members.items()}
-        cls = type(ctypes.c_int32).__new__(metacls, name, bases, namespace)
-        for key, value in cls._members_.items():
-            globals()[key] = value
-        return cls
+        return type(ctypes.c_int32).__new__(metacls, name, bases, namespace)
 
     def __repr__(self):
         return f"<Enum {self.__name__}>"
@@ -55,8 +52,12 @@ class _Enum(ctypes.c_int32, metaclass=_EnumType):
     def __eq__(self, other):
         if isinstance(other, int):
             return self.value == other
+        if type(self) is type(other):
+            return self.value == other.value
+        return NotImplemented
 
-        return type(self) is type(other) and self.value == other.value
+    def __hash__(self):
+        return hash(self.value)
 """
 
 
