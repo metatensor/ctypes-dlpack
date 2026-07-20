@@ -35,10 +35,63 @@ PYTHON_API.PyCapsule_New.argtypes = [
 ]
 
 
+# ``PyCapsule_GetName``/``PyCapsule_GetPointer`` re-bound with a raw ``c_void_p``
+# argument. These are needed from inside ``_versioned_capsule_destructor``:
+# CPython invokes the destructor during ``PyCapsule dealloc`` while the capsule
+# refcount is already 0, so the argument cannot be passed as ``py_object``
+# (which would INCREF then DECREF back to 0, recursively re-triggering
+# ``dealloc``). The raw pointer is obtained from the cached symbol address.
+_PyCapsule_GetName_c_void_p = ctypes.CFUNCTYPE(ctypes.c_char_p, ctypes.c_void_p)(
+    ctypes.cast(PYTHON_API.PyCapsule_GetName, ctypes.c_void_p).value
+)
+
+_PyCapsule_GetPointer_c_void_p = ctypes.CFUNCTYPE(
+    ctypes.c_void_p, ctypes.c_void_p, ctypes.c_char_p
+)(ctypes.cast(PYTHON_API.PyCapsule_GetPointer, ctypes.c_void_p).value)
+
+
 DLPACK_VERSIONED_NAME = b"dltensor_versioned"
 USED_DLPACK_VERSIONED_NAME = b"used_dltensor_versioned"
 DLPACK_NAME = b"dltensor"
 USED_DLPACK_NAME = b"used_dltensor"
+
+
+def _versioned_capsule_destructor(capsule_ptr):
+    """Release the ``DLManagedTensorVersioned`` held by a capsule.
+
+    This is invoked by CPython when the capsule is garbage collected without having
+    been consumed by a ``__dlpack__`` importer (i.e. its name is still
+    ``dltensor_versioned``). Capsules renamed to ``used_dltensor_versioned`` have
+    already been taken over by an importer and are left untouched.
+
+    The argument is a raw ``void*`` (the capsule pointer) rather than
+    ``py_object`` because CPython invokes the destructor during ``dealloc`` with
+    the capsule already at refcount 0: wrapping it as ``py_object`` would INCREF
+    then DECREF it back to 0, recursively re-triggering ``dealloc``.
+    """
+    if not capsule_ptr:
+        return
+
+    name = _PyCapsule_GetName_c_void_p(capsule_ptr)
+    if name != DLPACK_VERSIONED_NAME:
+        # Already consumed by an importer; the importer owns the deleter call.
+        return
+
+    ptr = _PyCapsule_GetPointer_c_void_p(capsule_ptr, DLPACK_VERSIONED_NAME)
+    if not ptr:
+        return
+
+    versioned_ptr = ctypes.cast(ptr, ctypes.POINTER(DLManagedTensorVersioned))
+    versioned = versioned_ptr.contents
+    if versioned.deleter:
+        versioned.deleter(versioned_ptr)
+
+
+# Keep a reference so the CFUNCTYPE is not garbage-collected while CPython holds
+# the destructor pointer inside the capsule.
+_VERSIONED_CAPSULE_DESTRUCTOR_C = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
+    _versioned_capsule_destructor
+)
 
 
 @ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensorVersioned))
@@ -89,8 +142,8 @@ def _make_dlpack_versioned_capsule(dl_managed_versioned_ptr):
     if not ptr_value:
         raise ValueError("DLManagedTensorVersioned pointer is null")
 
-    # TODO: this should have a destructor
-    return PYTHON_API.PyCapsule_New(ptr_value, DLPACK_VERSIONED_NAME, None)
+    destructor = ctypes.cast(_VERSIONED_CAPSULE_DESTRUCTOR_C, ctypes.c_void_p)
+    return PYTHON_API.PyCapsule_New(ptr_value, DLPACK_VERSIONED_NAME, destructor)
 
 
 def _call_dlpack_with_fallbacks(array, stream, max_version, dl_device, copy):
