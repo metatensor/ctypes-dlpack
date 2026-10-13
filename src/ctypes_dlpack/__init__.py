@@ -1,3 +1,5 @@
+import importlib.metadata
+
 from ._c_api import (
     DLPACK_FLAG_BITMASK_IS_COPIED,
     DLPACK_FLAG_BITMASK_IS_SUBBYTE_TYPE_PADDED,
@@ -23,7 +25,7 @@ from ._c_api import (
 from ._dlpack import DLPackArray, array_as_dlpack
 
 
-__version__ = "0.1.0"
+__version__ = importlib.metadata.version("ctypes-dlpack")
 
 
 __all__ = [
