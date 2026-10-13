@@ -1,4 +1,6 @@
 import ctypes
+import sys
+from typing import Any
 
 from ._c_api import (
     DLDevice,
@@ -40,6 +42,25 @@ PYTHON_API.PyErr_Fetch.argtypes = [
 PYTHON_API.PyErr_Clear.restype = None
 PYTHON_API.PyErr_Clear.argtypes = []
 
+PYTHON_API.Py_IncRef.restype = None
+PYTHON_API.Py_IncRef.argtypes = [ctypes.py_object]
+
+
+def _immortal(callback):
+    """Leak a reference to ``callback`` so it is never garbage-collected.
+
+    The C function pointer of a ``CFUNCTYPE`` object is only valid while the Python
+    object is alive. Deleters and capsule destructors can be called by other libraries
+    at any time, including during interpreter shutdown after the module globals
+    holding the callbacks have been cleared, so the callbacks must outlive the module.
+
+    The callbacks themselves must also check ``sys.is_finalizing()`` (bound as a
+    default argument, since module globals may already be cleared) and return early
+    during shutdown, as they can not rely on module globals in this case.
+    """
+    PYTHON_API.Py_IncRef(callback)
+    return callback
+
 
 def _fetch_pyerr():
     """Detach and return the current C-API exception instance, or ``None``.
@@ -75,7 +96,7 @@ DLPACK_NAME = b"dltensor"
 USED_DLPACK_NAME = b"used_dltensor"
 
 
-def _versioned_capsule_destructor(capsule_ptr):
+def _versioned_capsule_destructor(capsule_ptr, _is_finalizing=sys.is_finalizing):
     """Release the ``DLManagedTensorVersioned`` held by a capsule.
 
     This is invoked by CPython when the capsule is garbage collected without having
@@ -88,6 +109,9 @@ def _versioned_capsule_destructor(capsule_ptr):
     the capsule already at refcount 0: wrapping it as ``py_object`` would INCREF
     then DECREF it back to 0, recursively re-triggering ``dealloc``.
     """
+    if _is_finalizing():
+        return
+
     if not capsule_ptr:
         return
 
@@ -108,19 +132,22 @@ def _versioned_capsule_destructor(capsule_ptr):
         versioned.deleter(versioned_ptr)
 
 
-# Keep a reference so the CFUNCTYPE is not garbage-collected while CPython holds
-# the destructor pointer inside the capsule.
-_VERSIONED_CAPSULE_DESTRUCTOR_C = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
-    _versioned_capsule_destructor
+# Keep the CFUNCTYPE alive forever, since CPython holds the destructor pointer
+# inside the capsule.
+_VERSIONED_CAPSULE_DESTRUCTOR_C = _immortal(
+    ctypes.CFUNCTYPE(None, ctypes.c_void_p)(_versioned_capsule_destructor)
 )
 
 
-def _unversioned_capsule_destructor(capsule_ptr):
+def _unversioned_capsule_destructor(capsule_ptr, _is_finalizing=sys.is_finalizing):
     """Release the ``DLManagedTensor`` held by a legacy capsule.
 
     See ``_versioned_capsule_destructor`` for why the argument is a raw
     ``void*`` instead of ``py_object``.
     """
+    if _is_finalizing():
+        return
+
     if not capsule_ptr:
         return
 
@@ -141,16 +168,20 @@ def _unversioned_capsule_destructor(capsule_ptr):
         unversioned.deleter(unversioned_ptr)
 
 
-# Keep a reference so the CFUNCTYPE is not garbage-collected while CPython holds
-# the destructor pointer inside the capsule.
-_UNVERSIONED_CAPSULE_DESTRUCTOR_C = ctypes.CFUNCTYPE(None, ctypes.c_void_p)(
-    _unversioned_capsule_destructor
+# Keep the CFUNCTYPE alive forever, since CPython holds the destructor pointer
+# inside the capsule.
+_UNVERSIONED_CAPSULE_DESTRUCTOR_C = _immortal(
+    ctypes.CFUNCTYPE(None, ctypes.c_void_p)(_unversioned_capsule_destructor)
 )
 
 
+@_immortal
 @ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensorVersioned))
-def _versioned_wrapper_deleter(versioned_ptr):
+def _versioned_wrapper_deleter(versioned_ptr, _is_finalizing=sys.is_finalizing):
     """Forward to the legacy deleter, then free the wrapper allocation."""
+    if _is_finalizing():
+        return
+
     if not versioned_ptr:
         return
 
@@ -163,9 +194,13 @@ def _versioned_wrapper_deleter(versioned_ptr):
     PYTHON_API.PyMem_RawFree(ctypes.cast(versioned_ptr, ctypes.c_void_p))
 
 
+@_immortal
 @ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensor))
-def _unversioned_wrapper_deleter(unversioned_ptr):
+def _unversioned_wrapper_deleter(unversioned_ptr, _is_finalizing=sys.is_finalizing):
     """Forward to the versioned deleter, then free the wrapper allocation."""
+    if _is_finalizing():
+        return
+
     if not unversioned_ptr:
         return
 
@@ -247,6 +282,67 @@ def _wrap_versioned_as_unversioned(versioned_ptr):
         raise
 
 
+# Function pointer type of ``DLManagedTensorVersioned.deleter``
+_VERSIONED_DELETER_TYPE = dict(DLManagedTensorVersioned._fields_)["deleter"]
+
+# State for ``_attach_keepalive``, indexed by the address of the
+# ``DLManagedTensorVersioned``. Each entry contains the address of the original
+# deleter of the tensor (or ``None`` if it was null) and the list of objects to keep
+# alive. Entries are removed by ``_keepalive_deleter`` once the consumer releases
+# the tensor.
+_KEEPALIVE_REGISTRY: dict[int, tuple[int | None, list[Any]]] = {}
+
+
+@_immortal
+@ctypes.CFUNCTYPE(None, ctypes.POINTER(DLManagedTensorVersioned))
+def _keepalive_deleter(versioned_ptr, _is_finalizing=sys.is_finalizing):
+    """Restore and call the original deleter, then release the keepalive objects."""
+    if _is_finalizing():
+        return
+
+    if not versioned_ptr:
+        return
+
+    address = ctypes.cast(versioned_ptr, ctypes.c_void_p).value
+    entry = _KEEPALIVE_REGISTRY.pop(address, None)
+    if entry is None:
+        return
+
+    original_deleter_address, keepalive = entry
+    if original_deleter_address is None:
+        versioned_ptr.contents.deleter = _VERSIONED_DELETER_TYPE()
+    else:
+        original_deleter = _VERSIONED_DELETER_TYPE(original_deleter_address)
+        versioned_ptr.contents.deleter = original_deleter
+        original_deleter(versioned_ptr)
+
+    # only release the keepalive objects once the original tensor is gone
+    del entry, keepalive
+
+
+def _attach_keepalive(versioned_ptr, keepalive):
+    """Keep ``keepalive`` alive until the deleter of ``versioned_ptr`` is called.
+
+    This modifies the ``DLManagedTensorVersioned`` in place, replacing its deleter
+    with ``_keepalive_deleter``. The original deleter is restored before being
+    called, so the producer sees its own struct unchanged.
+    """
+    address = ctypes.cast(versioned_ptr, ctypes.c_void_p).value
+    entry = _KEEPALIVE_REGISTRY.get(address)
+    if entry is not None:
+        # the deleter was already replaced, add to the existing objects
+        entry[1].append(keepalive)
+        return
+
+    versioned = versioned_ptr.contents
+    # Store the address of the original deleter rather than ``versioned.deleter``
+    # itself: ctypes returns a view into the struct memory for this field, which
+    # would point to ``_keepalive_deleter`` once we overwrite it below.
+    original_deleter_address = ctypes.cast(versioned.deleter, ctypes.c_void_p).value
+    _KEEPALIVE_REGISTRY[address] = (original_deleter_address, [keepalive])
+    versioned.deleter = _keepalive_deleter
+
+
 def _make_dlpack_versioned_capsule(dl_managed_versioned_ptr):
     ptr_value = ctypes.cast(dl_managed_versioned_ptr, ctypes.c_void_p).value
     if not ptr_value:
@@ -274,28 +370,33 @@ def _call_dlpack_with_fallbacks(array, stream, max_version, dl_device, copy):
     keyword arguments) is used, and the resulting capsule is returned.
     """
     last_error = None
-
     try:
-        return array.__dlpack__(
-            stream=stream,
-            max_version=max_version,
-            dl_device=dl_device,
-            copy=copy,
-        )
-    except TypeError as error:
-        last_error = error
+        try:
+            return array.__dlpack__(
+                stream=stream,
+                max_version=max_version,
+                dl_device=dl_device,
+                copy=copy,
+            )
+        except TypeError as error:
+            last_error = error
 
-    try:
-        return array.__dlpack__(stream=stream)
-    except TypeError as error:
-        last_error = error
+        try:
+            return array.__dlpack__(stream=stream)
+        except TypeError as error:
+            last_error = error
 
-    try:
-        return array.__dlpack__()
-    except TypeError as error:
-        last_error = error
+        try:
+            return array.__dlpack__()
+        except TypeError as error:
+            last_error = error
 
-    raise RuntimeError("__dlpack__ call failed") from last_error
+        raise RuntimeError("__dlpack__ call failed") from last_error
+    finally:
+        # Break the reference cycle ``last_error -> traceback -> this frame ->
+        # last_error``, which would otherwise keep the caller's frame (and all
+        # objects it references) alive until the next garbage collection.
+        last_error = None
 
 
 class DLPackArray:
@@ -321,10 +422,20 @@ class DLPackArray:
     ...     print(torch_tensor.shape)
     """
 
-    def __init__(self, pointer: ctypes.POINTER(DLManagedTensorVersioned)):
+    def __init__(
+        self,
+        pointer: ctypes.POINTER(DLManagedTensorVersioned),
+        *,
+        keepalive: Any = None,
+    ):
         """
         :param pointer: pointer to a ``DLManagedTensorVersioned`` to be re-exposed as
             Python object following the ``__dlpack__`` protocol.
+        :param keepalive: arbitrary Python object to keep alive as long as the data in
+            ``pointer`` is alive, i.e. until the ``DLManagedTensorVersioned`` deleter is
+            called. Objects stored in ``keepalive`` are kept alive by a global registry
+            which is not visible to the garbage collector, meaning that reference cycles
+            going through ``keepalive`` will never be collected.
         """
         if not isinstance(pointer, ctypes.POINTER(DLManagedTensorVersioned)):
             raise TypeError(
@@ -334,6 +445,9 @@ class DLPackArray:
 
         if not pointer:
             raise ValueError("`pointer` is null")
+
+        if keepalive is not None:
+            _attach_keepalive(pointer, keepalive)
 
         self._pointer = pointer
 
@@ -402,6 +516,7 @@ def array_as_dlpack(
     max_version: DLPackVersion | tuple[int, int] | None = None,
     dl_device: DLDevice | tuple[int, int] | None = None,
     copy: bool | None = None,
+    keepalive: Any = None,
 ) -> ctypes.POINTER(DLManagedTensorVersioned):
     """
     Get a ctypes pointer to a ``DLManagedTensorVersioned`` struct from any array
@@ -424,6 +539,11 @@ def array_as_dlpack(
         pointer should be on the same device as ``array``. If this is a ``DLDevice``, it
         is converted to the 2-tuple expected by ``__dlpack__``.
     :param copy: boolean indicating whether or not to copy the input.
+    :param keepalive: arbitrary Python object to keep alive as long as the returned
+        ``DLManagedTensorVersioned`` is alive, i.e. until its deleter is called. Objects
+        stored in ``keepalive`` are kept alive by a global registry which is not visible
+        to the garbage collector, meaning that reference cycles going through
+        ``keepalive`` will never be collected.
     """
 
     if max_version is None:
@@ -520,5 +640,13 @@ def array_as_dlpack(
             f"expected type={dl_device_tuple[0]} id={dl_device_tuple[1]}, "
             f"got type={actual_device[0]} id={actual_device[1]}"
         )
+
+    if keepalive is not None:
+        try:
+            _attach_keepalive(result, keepalive)
+        except BaseException:
+            if result.contents.deleter:
+                result.contents.deleter(result)
+            raise
 
     return result
