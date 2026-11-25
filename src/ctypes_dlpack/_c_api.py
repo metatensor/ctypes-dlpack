@@ -45,7 +45,6 @@ class _Enum(ctypes.c_int32, metaclass=_EnumType):
 
 
 class DLDeviceType(_Enum):
-    pass
     kDLCPU = 1
     kDLCUDA = 2
     kDLCUDAHost = 3
@@ -65,7 +64,6 @@ class DLDeviceType(_Enum):
 
 
 class DLDataTypeCode(_Enum):
-    pass
     kDLInt = 0
     kDLUInt = 1
     kDLFloat = 2
