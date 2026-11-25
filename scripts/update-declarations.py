@@ -302,7 +302,6 @@ def generate_python_module(
     for enum in parsed.enums:
         file.write("\n\n")
         file.write(f"class {enum.name}(_Enum):\n")
-        file.write("    pass\n")
         for name, value in enum.values:
             file.write(f"    {name} = {value}\n")
 
