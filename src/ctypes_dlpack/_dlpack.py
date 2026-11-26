@@ -11,7 +11,13 @@ from ._c_api import (
 )
 
 
-PYTHON_API = ctypes.pythonapi
+# The prototypes configured below are stored on the function objects cached by the
+# library they come from, and `ctypes.pythonapi` is shared by the whole process: any
+# other user of the Python C-API through ctypes changes the same objects. In
+# particular `jax.ffi.pycapsule()` re-binds `PyCapsule_New.argtypes` to its own
+# signature, after which the calls here fail with an `ArgumentError`. Take a private
+# handle on the same library, so that these prototypes are ours alone.
+PYTHON_API = ctypes.PyDLL(ctypes.pythonapi._name, handle=ctypes.pythonapi._handle)
 
 # Configure Python C-API entry points once, then reuse them from hot paths.
 PYTHON_API.PyCapsule_GetPointer.restype = ctypes.c_void_p

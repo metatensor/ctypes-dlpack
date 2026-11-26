@@ -69,3 +69,37 @@ def test_unconsumed_capsule_runs_deleter(array):
     del capsule
     gc.collect()
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("array", [create_numpy_array(), create_torch_array()])
+def test_capsule_export_with_rebound_pythonapi(array):
+    """Exporting a capsule must not depend on the prototypes of
+    `ctypes.pythonapi`, which every user of the Python C-API through ctypes
+    shares. This is what `jax.ffi.pycapsule()` does to `PyCapsule_New`."""
+
+    destructor = ctypes.CFUNCTYPE(None, ctypes.py_object)
+    builder = ctypes.pythonapi.PyCapsule_New
+    saved = builder.restype, builder.argtypes
+    argtypes = (ctypes.c_void_p, ctypes.c_char_p, destructor)
+    builder.restype = ctypes.py_object
+    builder.argtypes = argtypes
+    try:
+        exported = DLPackArray(array_as_dlpack(array, keepalive=array))
+        np.testing.assert_equal(np.from_dlpack(exported), np.asarray(array))
+
+        # and the other direction: we must not have put the prototype back to
+        # what suits us, since whoever set it is still using it
+        assert builder.argtypes == argtypes
+        assert builder.restype is ctypes.py_object
+    finally:
+        builder.restype, builder.argtypes = saved
+
+
+def test_does_not_configure_the_shared_pythonapi():
+    """The prototypes this module sets must belong to this module, not to the
+    `ctypes.pythonapi` every other ctypes user of the Python C-API shares."""
+
+    from ctypes_dlpack import _dlpack
+
+    assert _dlpack.PYTHON_API is not ctypes.pythonapi
+    assert _dlpack.PYTHON_API.PyCapsule_New is not ctypes.pythonapi.PyCapsule_New
